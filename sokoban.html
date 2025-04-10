@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <title>Sokoban!</title>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+
+    <!-- Styling -->
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Itim&family=Bungee&display=swap');
+    </style>
+    <link rel="stylesheet" href="css/style.css" />
+    <link rel="stylesheet" href="css/fullscreen.css" />
+    <link rel="stylesheet" href="css/jquery-ui-edit.css" />
+
+    <!-- JS Utilities -->
+    <script src="utils/jquery.min.js"></script>
+    <script src="utils/lodash.js"></script>
+    <script src="utils/utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/ccapture.js-npmfixed@1.1.0/build/CCapture.all.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.0/papaparse.min.js"></script>
+
+
+    <!-- Game settings -->
+    <script src="utils/game_settings.js"></script>
+
+    <!-- Sokoban library -->
+    <script src="sokoban/agent.js"></script>
+    <script src="sokoban/tile.js"></script>
+    <script src="sokoban/box.js"></script>
+    <script src="sokoban/gridworld.js"></script>
+    <script src="sokoban/environment.js"></script>
+
+    <!-- Level specs -->
+    <script src="levels/local_stim.js"></script>
+
+
+</head>
+
+<body>
+
+    <div id="taskContainer">
+        <div id="instructionText">
+            Get all the brown boxes onto the green goals. <br>
+            Use the arrow keys to move the agent.
+        </div>
+
+        <div id="sokoban-solve-wrapper">
+            <!-- <div id="sokoban-solve-prompt" style="margin-top:50px">
+            </div> -->
+            <div id="sokoban-solve-container">
+                <div id="sokoban-solve-canvas-wrapper">
+                    <canvas id="sokobanCanvas" tabindex="0" width="600px" height="600px"
+                        style="display: block; margin: auto; outline: none"></canvas>
+                </div>
+                <div id="sokoban-solve-sidebar">
+                    <button id="undoBtn" class="gameBtn"><i class="fas fa-arrow-left">&nbsp;&nbsp;</i>UNDO</button>
+                    <button id="resetBtn" class="gameBtn"><i class="fas fa-fast-backward">&nbsp;&nbsp;</i>RESET</button>
+                    <button id="capturing-button" class="gameBtn">RECORD</button>
+                    <div id="timer"></div>
+                    <!-- <div id="timer" style="visibility: hidden; padding-left: 100px;"></div> -->
+                </div>
+            </div>
+            <!-- <div id="puzzle-solved-modal" class="modal" style="display: none; "><span
+                    id="puzzle-solved-modal-text">Solved! 🎉</span><span id="puzzle-over-modal-text"
+                    style="display:none">Time's up! ⌛️</span><br><br>Click <b>Continue</b> to move on.<br><button
+                    id="submitBtn">Continue</button></div> -->
+        </div>
+
+
+        <div id="attemptMetadata">
+            <!-- <h1>Level <span id="levelID"></span></h1> -->
+            <h2>Steps: <span id="stepsTaken">0</span></h2>
+            <h2>Attempt: <span id="attemptNumber">1</span></h2>
+        </div>
+        <div id="levelChooser">
+            <button onClick="loadLevel(current_level-1)"> Previous </button>
+            <select id="levelSelector" name="levelSelector" onChange="loadLevel(this.selectedIndex)">
+            </select>
+            <button onClick="loadLevel(current_level+1)"> Next </button>
+        </div>
+        <!-- data loader -->
+        <h2>Play a trace:</h2>
+        <input type="file" id="fileInput" accept=".csv" width="800" />
+        <div id="player-settings" hidden>
+            <br>
+            <div id="file-output"> </div>
+
+            Number of actions to play: <input type="number" id="actionNumberInput" value="100" min="1" />
+            Msec per action: <input type="number" id="actionDurationInput" value="250" min="200" />
+            <button id="playTraceBtn" onclick="playTrace(parsedDataArray)">Play attempt!</button>
+            <!-- <button onClick="loadLevel(current_level-1)"> Previous </button> -->
+
+        </div>
+
+    </div>
+
+
+
+</body>
+
+<script>
+    // populate the dropdown with levels
+    // const levelsArray = Array.from({ length: trial_stims['stims'].length }, (v, k) => k + 1)
+    const levelsArray = Array.from({ length: stims.length }, (v, k) => k + 1)
+    // console.log(levelsArray);
+    let select_elem = document.getElementById('levelSelector');
+
+    levelsArray.forEach((element, index) => {
+        const option_elem = document.createElement('option');
+        option_elem.value = index; // set option value
+        option_elem.innerHTML = stims[index].stimuli_set + " " + stims[index].collection_name + " " + stims[index].level_name; //"Level " + element; // set option display text
+        // Append option_elem to select_elem
+        select_elem.appendChild(option_elem);
+    });
+    const maxLevels = document.getElementById("levelSelector").childElementCount;
+
+    // set up sokoban canvas
+    const canvas = document.getElementById("sokobanCanvas");
+    let attemptNumber = 0;
+    let current_level = 0;
+    var environment = null;
+
+    // initialize environment and capturer
+    $(function () {
+        environment = loadLevel(current_level);
+
+        capturer = null;
+
+        var isRecording = false;
+        var cB = document.getElementById('capturing-button')
+
+        cB.addEventListener('click', function (e) {
+            if (!isRecording) {
+                // Create a capturer that exports a WebM video
+                capturer = new CCapture({
+                    verbose: false,
+                    display: true,
+                    framerate: 30,
+                    format: 'webm',
+                    timeLimit: 300,
+                    autoSaveTime: 30
+                });
+
+                capturer.start();
+                this.textContent = "STOP RECORDING";
+
+            } else {
+                stopandsave();
+                this.textContent = "RECORD";
+            }
+            isRecording = !isRecording;
+            e.preventDefault();
+        }, false);
+    });
+
+    // Function to load a level
+    function loadLevel(levelIndex) {
+        if (levelIndex >= maxLevels | levelIndex < 0) {
+            console.log("Level index out of bounds");
+            return;
+        } else {
+            // update attempt number
+            attemptNumber = current_level == levelIndex ? attemptNumber + 1 : 1;
+            document.getElementById('attemptNumber').textContent = attemptNumber;
+            // update level selector
+            document.getElementById('levelSelector').selectedIndex = levelIndex;
+            // document.getElementById('levelID').textContent = levelIndex + 1;
+            // load level
+            current_level = levelIndex;
+            if (environment) { environment.destroy() }
+            environment = new Environment(stims[current_level], canvas);
+            return environment;
+        }
+    }
+
+    // Buttons
+    const undoBtn = document.getElementById('undoBtn');
+    undoBtn.addEventListener('click', () => {
+        environment.undo();
+    });
+
+    const resetBtn = document.getElementById('resetBtn');
+    resetBtn.addEventListener('click', () => {
+        environment.restart()
+    });
+
+    // Timer
+    if (document.getElementById("timer") & gs.game_info.solve_duration !== null) {
+        // Get the display element
+        let timeLeft = gs.game_info.solve_duration;
+        const display = document.getElementById("timer");
+        let minutes = Math.floor(timeLeft / 60);
+        let seconds = Math.floor((timeLeft % 60));
+        // console.log(typeof (seconds.toString().padStart(2, '0')));
+        display.textContent = "blah" //`${minutes.toString()}`;//:${seconds.toString().padStart(2, '0')}`;
+        console.log(display.textContent);
+        display.style.visibility = "visible";
+
+        // Update the timer every second
+        const intervalId = setInterval(() => {
+            // Decrement the time
+            timeLeft -= 1;
+            // Calculate minutes and seconds
+            minutes = Math.floor(timeLeft / 60);
+            seconds = Math.floor((timeLeft % 60));
+
+            // Display the time
+            display.textContent = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+
+            if (environment.solved) {
+                // log seconds taken
+                // environment.removeEventListeners()
+                clearInterval(intervalId);
+            } else if (timeLeft < 1) {
+                // Check if the timer has reached 0
+                environment.removeEventListeners()
+                clearInterval(intervalId);
+                document.getElementById("puzzle-solved-modal-text").style.display = "none"
+                document.getElementById("puzzle-over-modal-text").style.display = "block"
+                document.getElementById("puzzle-solved-modal").style.display = "block"
+            }
+        }, 1000);
+    }
+
+    // dispatch kb presses
+    // usage:  simulateKeyEvent("keydown", "L")
+    function simulateKeyEvent(eventType, direction) {
+        var e = document.createEventObject ? document.createEventObject() : document.createEvent("Events");
+        if (e.initEvent) e.initEvent(eventType, true, true);
+
+        thecodes = {
+            "L": 37,
+            "U": 38,
+            "R": 39,
+            "D": 40
+        }
+        e.keyCode = thecodes[direction];
+        e.which = thecodes[direction];
+
+        canvas.dispatchEvent(e) // Dispatch to canvas
+    }
+
+    // csv loader
+    let parsedDataArray = [];
+    let parsedSession = {
+        gameID: null,
+        stimuli_set: null,
+        collection_name: null,
+        level_name: null,
+        condition: null
+    }
+
+    document.getElementById('fileInput').addEventListener('change', function (event) {
+        const file = event.target.files[0];
+        if (file) {
+            Papa.parse(file, {
+                header: true,
+                // step: function (results, parser) {
+                // parsedDataArray.push(results.data['action']);
+                // action = results.data['action'];
+                // },
+                complete: function (results) {
+                    // document.getElementById('file-output').innerText = JSON.stringify(results.data['action']);
+                    // parse actions
+                    parsedDataArray = _.map(results.data, obj => obj['action']);
+                    // print output
+                    document.getElementById('file-output').innerText = JSON.stringify(parsedDataArray);
+                    document.getElementById('player-settings').hidden = false;
+                    // get metadata
+                    parsedSession.gameID = results.data[0]['gameID'];
+                    parsedSession.condition = results.data[0]['condition'];
+                    parsedSession.collection_name = results.data[0]['collection_name'] == "tutorial" ? "practice" : results.data[0]['collection_name'];
+                    parsedSession.stimuli_set = parsedSession.collection_name == "practice" ? "" : results.data[0]['stimuli_set'];
+                    parsedSession.level_name = parsedSession.collection_name == "practice" ? parseInt(results.data[0]['level_name']) - 2 : results.data[0]['level_name'];
+                    console.log(parsedSession);
+                    // load correct level
+                    level_string = parsedSession.stimuli_set + " " + parsedSession.collection_name + " " + parsedSession.level_name;
+                    levelid = Array.from(select_elem.options).map(el => el.innerText).indexOf(level_string)
+                    loadLevel(levelid);
+                },
+                error: function (error) {
+                    console.error('Error parsing CSV:', error);
+                }
+            });
+        }
+    });
+
+    function stopandsave(vidname) {
+        capturer.stop();
+        capturer.save(name = vidname);
+    }
+
+    function playTrace(actions) {
+        let actionID = 0;
+        let tid = setInterval(() => {
+            if (actionID < parseInt(document.getElementById('actionNumberInput').value)) {
+                action = actions[actionID];
+                switch (action) {
+                    case "restart":
+                        environment.restart();
+                        break;
+                    case "undo":
+                        environment.undo();
+                        break;
+                    default:
+                        simulateKeyEvent("keydown", action);
+                }
+            } else (
+                clearInterval(tid)
+            )
+            actionID++
+            if (action == null) {
+                clearInterval(tid);
+                if (isRecording) {
+                    // automatically stop recording
+                    stopandsave();
+                }
+            }
+        }, parseInt(document.getElementById('actionDurationInput').value));
+
+    };
+
+
+</script>
+
+</html>
